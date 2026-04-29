@@ -9,19 +9,20 @@ on:
       model:
         description: 'Model to use'
         required: true
-        default: 'deepseek-ai/deepseek-v4-pro'
+        default: 'nvidia/deepseek-ai/deepseek-v4-pro'
         type: choice
         options:
-          - deepseek-ai/deepseek-v4-pro
-          - deepseek-ai/deepseek-v4-flash
+          - nvidia/deepseek-ai/deepseek-v4-pro
+          - nvidia/deepseek-ai/deepseek-v4-flash
 
 env:
-  MODEL_NAME: ${{ inputs.model || 'deepseek-ai/deepseek-v4-pro' }}
+  MODEL_NAME: ${{ inputs.model || 'nvidia/deepseek-ai/deepseek-v4-pro' }}
+  SLUG: ${{ inputs.model == 'nvidia/deepseek-ai/deepseek-v4-flash' && 'dsv4flash' || 'dsv4pro' }}
 
 jobs:
   generate-brief:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     
     steps:
       - name: Checkout repo
@@ -30,29 +31,70 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.12'
+          node-version: '20'
 
-      - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4 duckduckgo-search
+      - name: Install OpenCode
+        run: npm install -g opencode
 
-      - name: Generate Morning Brief
+      - name: Generate Morning Brief via OpenCode
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          MODEL_NAME: ${{ env.MODEL_NAME }}
-        run: |
-          python3 .github/scripts/generate_brief.py
-
-      - name: Commit and push brief
-        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
-          git add briefs/
-          git diff --cached --quiet || git commit -m "Morning Brief: $(date -u +%Y-%m-%d) via ${{ env.MODEL_NAME }}"
-          git push
+          export MODEL="${{ env.MODEL_NAME }}"
+          export SLUG="${{ env.SLUG }}"
+          export DATE="$(date -u +%Y-%m-%d)"
+          
+          # Create prompt with context
+          cat > /tmp/opencode_prompt.txt << 'PROMPT'
+          You are a senior macro and equity trading desk analyst at a top-tier Korean securities firm.
+
+          Your task: Write a professional KRX (Korea Exchange) Morning Brief for institutional clients.
+
+          ## Requirements
+          - Target audience: Fund managers, hedge funds, prop traders
+          - Tone: Professional, concise, actionable — no fluff
+          - Data: Use real-time market data via web search and web fetch
+          - Length: ~3,000–5,000 words
+          - Confidence score: 1–10 (be honest)
+
+          ## Structure
+          1. **Opening Call** — Expected KOSPI open direction, gap estimate, confidence level, main catalyst
+          2. **Overnight Summary** — S&P 500, Nasdaq, SOX, US 10Y, DXY, USDKRW, oil, key news
+          3. **Market Regime Today** — Characterize the trading day (trend day, range day, news volatility, etc.)
+          4. **Foreign Money Flow Radar** — Foreigner/institution/retail flow expectations
+          5. **Sector Heatmap** — Hottest and weakest sectors today with reasoning
+          6. **Key Stocks In Play Today** — 6–10 stocks with direction (bullish/bearish/watch) and why
+          7. **Macro Risk Dashboard** — FX risk, yield risk, China risk, geopolitical risk, earnings risk (1–10 scale)
+          8. **Intraday Playbook** — Best tactic, what to avoid, what to watch
+          9. **Key Levels** — KOSPI, KOSDAQ, USDKRW support/resistance
+          10. **Today's Edge** — Single most important insight for the day
+          11. **BONUS EDGE** — Only when confidence ≥ 8/10: High-conviction trade idea with entry, target, stop
+
+          ## Data Sources to Check
+          - S&P 500, Nasdaq, Dow Jones (CNBC or Investing.com)
+          - SOX (Philadelphia Semiconductor Index)
+          - US 10-Year Treasury Yield
+          - US Dollar Index (DXY)
+          - USD/KRW exchange rate
+          - WTI Crude Oil
+          - KOSPI and KOSDAQ previous close
+          - Samsung Electronics (005930.KS), SK Hynix (000660.KS)
+          - Key Korean sector ETFs
+          - Any overnight news affecting Korea (tech earnings, Fed, geopolitical)
+
+          ## Output
+          Write the brief in Markdown format. Save to briefs/{DATE}-{SLUG}.md where DATE is today's UTC date (YYYY-MM-DD) and SLUG is the model identifier (e.g., dsv4pro or dsv4flash).
+
+          After writing, commit the file with message "Morning Brief: {DATE} ({SLUG})" and push to a new branch, then create a pull request.
+          PROMPT
+          
+          # Run OpenCode with the prompt
+          opencode --model "$MODEL" --prompt "$(cat /tmp/opencode_prompt.txt)"
+
+      - name: Verify brief created
+        run: |
+          ls -la briefs/${DATE}-${SLUG}.md || echo "Brief not found - check OpenCode logs"

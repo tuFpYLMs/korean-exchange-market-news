@@ -2,26 +2,27 @@ name: KRX Post-Market Review
 
 on:
   schedule:
-    # 06:30 UTC = 15:30 KST (after KRX closes)
+    # 06:30 UTC = 15:30 KST (after KRX closes at 15:30 KST)
     - cron: '30 6 * * *'
   workflow_dispatch:
     inputs:
       model:
         description: 'Model to use'
         required: true
-        default: 'deepseek-ai/deepseek-v4-pro'
+        default: 'nvidia/deepseek-ai/deepseek-v4-pro'
         type: choice
         options:
-          - deepseek-ai/deepseek-v4-pro
-          - deepseek-ai/deepseek-v4-flash
+          - nvidia/deepseek-ai/deepseek-v4-pro
+          - nvidia/deepseek-ai/deepseek-v4-flash
 
 env:
-  MODEL_NAME: ${{ inputs.model || 'deepseek-ai/deepseek-v4-pro' }}
+  MODEL_NAME: ${{ inputs.model || 'nvidia/deepseek-ai/deepseek-v4-pro' }}
+  SLUG: ${{ inputs.model == 'nvidia/deepseek-ai/deepseek-v4-flash' && 'dsv4flash' || 'dsv4pro' }}
 
 jobs:
   generate-review:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     
     steps:
       - name: Checkout repo
@@ -30,37 +31,64 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.12'
+          node-version: '20'
 
-      - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4 duckduckgo-search
+      - name: Install OpenCode
+        run: npm install -g opencode
 
-      - name: Run date gate check
-        id: gate
-        run: |
-          python3 scripts/review_gate.py
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
-
-      - name: Generate Post-Market Review
-        if: steps.gate.outputs.exit_code == '0'
+      - name: Generate Post-Market Review via OpenCode
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          MODEL_NAME: ${{ env.MODEL_NAME }}
-        run: |
-          python3 .github/scripts/generate_review.py
-
-      - name: Commit and push review
-        if: steps.gate.outputs.exit_code == '0'
-        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
-          git add reviews/
-          git diff --cached --quiet || git commit -m "Post-market review: $(date -u +%Y-%m-%d) via ${{ env.MODEL_NAME }}"
-          git push
+          export MODEL="${{ env.MODEL_NAME }}"
+          export SLUG="${{ env.SLUG }}"
+          export DATE="$(date -u +%Y-%m-%d)"
+          
+          # Create prompt with context
+          cat > /tmp/opencode_prompt.txt << 'PROMPT'
+          You are a senior macro and equity trading desk analyst at a top-tier Korean securities firm.
+
+          Your task: Write a professional KRX Post-Market Review analyzing today's trading session.
+
+          ## Requirements
+          - Target audience: Fund managers, hedge funds, prop traders
+          - Tone: Professional, concise, actionable — no fluff
+          - Data: Use real-time market data via web search and web fetch
+          - Length: ~2,000–3,000 words
+          - Confidence score: 1–10 (be honest)
+
+          ## Structure
+          1. **Session Summary** — KOSPI/KOSDAQ close, change %, volume, vs. morning call accuracy
+          2. **Foreign Flow Analysis** — Net buy/sell by foreigners, institutions, retail; key sectors
+          3. **Sector Performance** — Best/worst performing sectors and why
+          4. **Key Stock Moves** — Notable movers (Samsung, SK Hynix, EV battery, biotech, etc.)
+          5. **Macro Drivers Today** — What moved markets (Fed, earnings, geopolitical, FX)
+          6. **Overnight Preview** — US/Europe expectations; key events to watch
+          7. **Tomorrow's Setup** — Early read on next session; key levels and catalysts
+          8. **Trading Desk Notes** — Any unusual flows, block trades, or positioning changes
+
+          ## Data Sources to Check
+          - KOSPI, KOSDAQ close levels and change %
+          - USD/KRW close level
+          - Foreigner net buy/sell data
+          - Top gainers/losers on KRX
+          - Sector index performance
+          - US futures (S&P, Nasdaq, Dow) for overnight context
+          - Any breaking news from Korea or affecting Korea
+
+          ## Output
+          Write the review in Markdown format. Save to reviews/{DATE}-{SLUG}.md where DATE is today's UTC date (YYYY-MM-DD) and SLUG is the model identifier.
+
+          After writing, commit the file with message "Post-Market Review: {DATE} ({SLUG})" and push to a new branch, then create a pull request.
+          PROMPT
+          
+          # Run OpenCode with the prompt
+          opencode --model "$MODEL" --prompt "$(cat /tmp/opencode_prompt.txt)"
+
+      - name: Verify review created
+        run: |
+          ls -la reviews/${DATE}-${SLUG}.md || echo "Review not found - check OpenCode logs"
