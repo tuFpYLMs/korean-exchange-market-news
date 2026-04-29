@@ -1,0 +1,47 @@
+name: KRX Morning Brief — OpenCode Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model to use'
+        required: true
+        default: 'nvidia/deepseek-ai/deepseek-v4-flash'
+        type: choice
+        options:
+          - nvidia/deepseek-ai/deepseek-v4-pro
+          - nvidia/deepseek-ai/deepseek-v4-flash
+
+jobs:
+  morning-brief:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run OpenCode Morning Brief
+        uses: anomalyco/opencode/github@latest
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        with:
+          model: ${{ inputs.model || 'nvidia/deepseek-ai/deepseek-v4-flash' }}
+          prompt: |
+            Read prompts/morning-brief.md for the brief template.
+            
+            Use web_search to gather overnight market data:
+            - S&P500, Nasdaq closes
+            - US Treasury yields
+            - USDKRW rate
+            - Oil prices
+            - Samsung, SK Hynix stock news
+            
+            Then write a concise morning brief for KRX (Korean stock market).
+            Save it as briefs/YYYY-MM-DD-dsv4flash.md
+            Commit and push.
