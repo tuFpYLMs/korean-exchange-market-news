@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "nvidia": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "NVIDIA NIM",
+      "options": {
+        "baseURL": "https://integrate.api.nvidia.com/v1",
+        "headers": {
+          "Authorization": "Bearer ${NVIDIA_API_KEY}"
+        }
+      }
+    }
+  },
+  "permission": {
+    "websearch": "allow",
+    "codesearch": "allow",
+    "webfetch": "allow",
+    "bash": "allow",
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow"
+  }
+}
