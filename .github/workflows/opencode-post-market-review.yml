@@ -1,0 +1,75 @@
+name: KRX Post-Market Review — OpenCode
+
+on:
+  schedule:
+    # 06:30 UTC = 15:30 KST (after KRX closes)
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model to use'
+        required: true
+        default: 'nvidia/deepseek-ai/deepseek-v4-pro'
+        type: choice
+        options:
+          - nvidia/deepseek-ai/deepseek-v4-pro
+          - nvidia/deepseek-ai/deepseek-v4-flash
+
+jobs:
+  post-market-review:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run date gate check
+        id: gate
+        run: |
+          python3 scripts/review_gate.py
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Run OpenCode Post-Market Review
+        if: steps.gate.outputs.exit_code == '0'
+        uses: anomalyco/opencode/github@latest
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        with:
+          model: ${{ inputs.model || 'nvidia/deepseek-ai/deepseek-v4-pro' }}
+          prompt: |
+            Generate a STRICT data-only post-market review for KRX.
+            
+            Read the prompt template from prompts/post-market-review.md
+            Read the morning brief from briefs/YYYY-MM-DD.md
+            
+            CRITICAL RULES:
+            1. NEVER generate a review before KRX market close (15:30 KST / 06:30 UTC)
+            2. NEVER guess, infer, or hallucinate market data
+            3. ONLY use data from explicit web sources
+            4. If data is missing, mark it UNTESTABLE and explain why
+            
+            Use web_search to find actual market data for the trading day:
+            - KOSPI open, high, low, close, change %
+            - KOSDAQ open, high, low, close, change %
+            - Foreign investor net buy/sell (billion KRW)
+            - Institutional and retail flows
+            - Samsung Electronics, SK Hynix, Hyundai Motor, LG Energy Solution, 
+              Hanwha Aerospace, Naver, Kakao, POSCO Holdings — actual closes and changes
+            - USDKRW exchange rate
+            - Top sector performers and losers
+            
+            Write the review as reviews/YYYY-MM-DD-{model-slug}.md
+            Include the grade breakdown (0-100)
+            Commit and push to main.
+            
+            ABSOLUTE PROHIBITIONS:
+            - NEVER write a review before 06:30 UTC / 15:30 KST
+            - NEVER invent a stock price, index level, or flow number
+            - NEVER say "likely" or "probably" in Actual Market Outcomes section
+            - NEVER fill missing data with "estimated" or "approximate" values

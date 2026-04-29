@@ -1,0 +1,77 @@
+name: KRX Morning Brief — OpenCode
+
+on:
+  schedule:
+    # 23:00 UTC = 08:00 KST next day
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model to use'
+        required: true
+        default: 'nvidia/deepseek-ai/deepseek-v4-pro'
+        type: choice
+        options:
+          - nvidia/deepseek-ai/deepseek-v4-pro
+          - nvidia/deepseek-ai/deepseek-v4-flash
+
+jobs:
+  morning-brief:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run OpenCode Morning Brief
+        uses: anomalyco/opencode/github@latest
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        with:
+          model: ${{ inputs.model || 'nvidia/deepseek-ai/deepseek-v4-pro' }}
+          prompt: |
+            Generate the PRO KRX Morning Intelligence Brief for today.
+            
+            Read the prompt template from prompts/morning-brief.md
+            
+            Use web_search to gather:
+            - S&P500, Nasdaq, Russell 2000 closes
+            - SOX (Philadelphia Semiconductor Index)
+            - Nvidia and major AI stocks performance
+            - US Treasury yields (10Y, 2Y)
+            - DXY (USD Index), USDKRW rate
+            - Oil, LNG, Copper prices
+            - China equities (CSI 300, Hang Seng)
+            - Nikkei 225
+            - Any Fed/BOJ/PBOC comments or policy news
+            - Geopolitical developments affecting markets
+            
+            Also search for Korea-specific news:
+            - KRX opening expectations / pre-market sentiment
+            - Foreign investor flow trends
+            - Institution and retail behavior signals
+            - Government policy announcements
+            - Export/import data releases
+            - BOK policy signals
+            - CPI/inflation data
+            - Major earnings releases (Samsung, SK Hynix, Hyundai, LG, Naver, Kakao, etc.)
+            - Regulatory changes
+            - Domestic headlines from Korean financial news
+            
+            Save the brief as briefs/YYYY-MM-DD-{model-slug}.md
+            Commit and push to main.
+            
+            Rules:
+            - Only KRX-relevant information
+            - No generic global news fluff
+            - Dense, concise, actionable (5-minute read max)
+            - Think like a professional macro + equity trading desk
+            - If conviction is low, state it clearly
+            - Convert all times to KST
+            - Use overnight data heavily
