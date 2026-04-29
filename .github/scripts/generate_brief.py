@@ -68,7 +68,7 @@ def web_fetch(url: str) -> str:
 # ── NVIDIA NIM API ────────────────────────────────────────────────
 
 def call_nim(messages: list, max_tokens: int = 8000, temperature: float = 0.3) -> str:
-    """Call NVIDIA NIM chat completions API."""
+    """Call NVIDIA NIM chat completions API with retry."""
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -79,10 +79,28 @@ def call_nim(messages: list, max_tokens: int = 8000, temperature: float = 0.3) -
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    resp = requests.post(NIM_URL, headers=headers, json=payload, timeout=300)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    
+    # Retry on 500 errors (NIM sometimes has transient issues)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(NIM_URL, headers=headers, json=payload, timeout=300)
+            if resp.status_code == 500 and attempt < max_retries - 1:
+                print(f"   ⚠ NIM returned 500, retrying ({attempt + 1}/{max_retries})...")
+                import time
+                time.sleep(5 * (attempt + 1))
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except requests.exceptions.HTTPError as e:
+            if attempt < max_retries - 1:
+                print(f"   ⚠ HTTP error {e.response.status_code}, retrying...")
+                import time
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise
+    raise RuntimeError("Max retries exceeded for NIM API call")
 
 # ── Agent Loop ──────────────────────────────────────────────────────
 
