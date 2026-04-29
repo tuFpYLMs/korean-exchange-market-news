@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""
+KRX Morning Brief Generator — Agent with Web Search
+Uses NVIDIA NIM API with DeepSeek V4 Pro/Flash.
+Supports multiple models — output files include model slug.
+"""
+
+import os
+import sys
+import json
+import re
+import requests
+from datetime import datetime, timezone, timedelta
+from duckduckgo_search import DDGS
+from pathlib import Path
+
+# ── Config ──────────────────────────────────────────────────────────
+MODEL_NAME = os.environ.get("MODEL_NAME", "deepseek-ai/deepseek-v4-pro")
+API_KEY = os.environ["NVIDIA_API_KEY"]
+NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+# Derive a short slug from model name for filenames
+# e.g. "deepseek-ai/deepseek-v4-pro" → "dsv4pro"
+MODEL_SLUG_MAP = {
+    "deepseek-ai/deepseek-v4-pro": "dsv4pro",
+    "deepseek-ai/deepseek-v4-flash": "dsv4flash",
+}
+MODEL_SLUG = MODEL_SLUG_MAP.get(MODEL_NAME, MODEL_NAME.replace("/", "-").replace(".", "")[:12])
+
+# KRX 2026 holidays
+KRX_HOLIDAYS = {
+    "2026-01-01", "2026-01-02",
+    "2026-02-16", "2026-02-17", "2026-02-18",
+    "2026-03-01", "2026-05-01", "2026-05-05",
+    "2026-06-06", "2026-08-15",
+    "2026-09-28", "2026-09-29", "2026-09-30",
+    "2026-10-03", "2026-10-05",
+    "2026-12-25", "2026-12-31",
+}
+
+# ── Web Search Tool ─────────────────────────────────────────────────
+
+def web_search(query: str, max_results: int = 5) -> list:
+    """Search the web using DuckDuckGo."""
+    try:
+        with DDGS() as ddgs:
+            results = ddgs.text(query, max_results=max_results)
+            return [
+                {"title": r["title"], "href": r["href"], "body": r["body"]}
+                for r in results
+            ]
+    except Exception as e:
+        return [{"error": str(e), "query": query}]
+
+def web_fetch(url: str) -> str:
+    """Fetch a webpage and return text content."""
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; KRX-Brief-Bot/1.0)"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        # Simple HTML-to-text (could use BeautifulSoup for better parsing)
+        text = re.sub(r'<[^>]+>', ' ', resp.text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:8000]  # Limit length
+    except Exception as e:
+        return f"Error fetching {url}: {e}"
+
+# ── NVIDIA NIM API ────────────────────────────────────────────────
+
+def call_nim(messages: list, max_tokens: int = 8000, temperature: float = 0.3) -> str:
+    """Call NVIDIA NIM chat completions API."""
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    resp = requests.post(NIM_URL, headers=headers, json=payload, timeout=300)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
+# ── Agent Loop ──────────────────────────────────────────────────────
+
+def run_agent_with_tools(system_prompt: str, user_prompt: str) -> str:
+    """
+    Run the model with tool-calling loop.
+    The model can request web_search or web_fetch.
+    We execute the tools and feed results back.
+    """
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    # Tool definitions for the model
+    tools_desc = """
+You have access to these tools. To use a tool, output ONLY a JSON block like this:
+
+```tool
+{"tool": "web_search", "query": "your search query"}
+```
+
+or
+
+```tool
+{"tool": "web_fetch", "url": "https://example.com"}
+```
+
+Available tools:
+- web_search(query): Search DuckDuckGo for the query. Returns list of results with title, URL, snippet.
+- web_fetch(url): Fetch the content of a URL. Returns page text.
+
+After receiving tool results, continue your analysis. When you have all data, output the final brief.
+"""
+
+    # Add tools description to system prompt
+    messages[0]["content"] += "\n\n" + tools_desc
+
+    max_iterations = 8
+    for iteration in range(max_iterations):
+        print(f"  → Agent iteration {iteration + 1}...")
+        response = call_nim(messages, max_tokens=8000, temperature=0.3)
+
+        # Check if model wants to use a tool
+        tool_match = re.search(r'```tool\s*\n(\{.*?\})\n\s*```', response, re.DOTALL)
+        if not tool_match:
+            # No tool call — this is the final output
+            print("  ✓ Final response received (no more tool calls)")
+            return response
+
+        # Parse tool call
+        try:
+            tool_call = json.loads(tool_match.group(1))
+        except json.JSONDecodeError:
+            print(f"  ⚠ Invalid tool JSON: {tool_match.group(1)}")
+            messages.append({"role": "assistant", "content": response})
+            messages.append({"role": "user", "content": "Invalid tool format. Please use exact JSON format: {\"tool\": \"web_search\", \"query\": \"...\"}"})
+            continue
+
+        tool_name = tool_call.get("tool")
+        print(f"  🔧 Tool call: {tool_name}")
+
+        # Execute tool
+        if tool_name == "web_search":
+            query = tool_call.get("query", "")
+            results = web_search(query)
+            tool_result = json.dumps(results, ensure_ascii=False, indent=2)
+        elif tool_name == "web_fetch":
+            url = tool_call.get("url", "")
+            content = web_fetch(url)
+            tool_result = json.dumps({"url": url, "content": content[:4000]}, ensure_ascii=False)
+        else:
+            tool_result = json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+        # Add assistant message + tool result to conversation
+        messages.append({"role": "assistant", "content": response})
+        messages.append({"role": "user", "content": f"Tool result for {tool_name}:\n{tool_result}\n\nContinue your analysis."})
+
+    print("  ⚠ Max iterations reached. Returning last response.")
+    return response
+
+# ── Main ────────────────────────────────────────────────────────────
+
+def main():
+    # Get KST date (next trading day)
+    kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
+    kst_date = kst_now.strftime("%Y-%m-%d")
+    kst_weekday = kst_now.weekday()
+
+    # Skip weekends and holidays
+    if kst_weekday >= 5:
+        print(f"SKIP: Weekend ({kst_date})")
+        sys.exit(0)
+    if kst_date in KRX_HOLIDAYS:
+        print(f"SKIP: Holiday ({kst_date})")
+        sys.exit(0)
+
+    # Read the prompt template
+    prompt_path = "prompts/morning-brief.md"
+    if not os.path.exists(prompt_path):
+        print(f"ERROR: Prompt file not found: {prompt_path}")
+        sys.exit(1)
+
+    with open(prompt_path, "r") as f:
+        prompt_template = f.read()
+
+    # Build user prompt with date context
+    user_prompt = prompt_template + f"\n\n---\n**Today's date (KST):** {kst_date}\n**Target trading day:** {kst_date}\n**Model:** {MODEL_NAME}\n\nGenerate the brief now. Use web_search to gather current data."
+
+    system_prompt = (
+        "You are a professional macro and equity trading desk analyst specializing in the Korean stock market (KRX). "
+        "Generate dense, actionable market intelligence briefs. "
+        "You can use web_search and web_fetch tools to gather real-time data. "
+        "Always cite your sources. Be concise and data-driven."
+    )
+
+    print(f"🚀 Generating Morning Brief for {kst_date} using {MODEL_NAME}...")
+    brief_content = run_agent_with_tools(system_prompt, user_prompt)
+
+    # Add model metadata header
+    brief_with_meta = f"""<!--
+model: {MODEL_NAME}
+model_slug: {MODEL_SLUG}
+generated_at: {datetime.now(timezone.utc).isoformat()}
+prompt_file: prompts/morning-brief.md
+-->
+
+{brief_content}
+"""
+
+    # Save brief with model-specific filename
+    os.makedirs("briefs", exist_ok=True)
+    brief_path = f"briefs/{kst_date}-{MODEL_SLUG}.md"
+    with open(brief_path, "w") as f:
+        f.write(brief_with_meta)
+
+    print(f"✅ Brief saved to {brief_path} ({len(brief_with_meta)} chars)")
+    print(f"   Model: {MODEL_NAME} ({MODEL_SLUG})")
+
+if __name__ == "__main__":
+    main()
