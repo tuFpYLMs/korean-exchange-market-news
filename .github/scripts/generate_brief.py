@@ -78,26 +78,29 @@ def call_nim(messages: list, max_tokens: int = 8000, temperature: float = 0.3) -
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
+        "stream": False,
     }
     
-    # Retry on 500 errors (NIM sometimes has transient issues)
+    # Retry on errors (NIM sometimes has transient issues or connection resets)
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            resp = requests.post(NIM_URL, headers=headers, json=payload, timeout=300)
-            if resp.status_code == 500 and attempt < max_retries - 1:
-                print(f"   ⚠ NIM returned 500, retrying ({attempt + 1}/{max_retries})...")
+            print(f"   → Calling NIM (attempt {attempt + 1}/{max_retries}, max_tokens={max_tokens})...")
+            resp = requests.post(NIM_URL, headers=headers, json=payload, timeout=120)
+            if resp.status_code in (500, 502, 503) and attempt < max_retries - 1:
+                print(f"   ⚠ NIM returned {resp.status_code}, retrying...")
                 import time
-                time.sleep(5 * (attempt + 1))
+                time.sleep(10 * (attempt + 1))
                 continue
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"]
-        except requests.exceptions.HTTPError as e:
+        except (requests.exceptions.HTTPError, requests.exceptions.ConnectionError) as e:
+            status = getattr(getattr(e, 'response', None), 'status_code', 'ConnectionError')
+            print(f"   ⚠ Error: {status}, retrying...")
             if attempt < max_retries - 1:
-                print(f"   ⚠ HTTP error {e.response.status_code}, retrying...")
                 import time
-                time.sleep(5 * (attempt + 1))
+                time.sleep(10 * (attempt + 1))
                 continue
             raise
     raise RuntimeError("Max retries exceeded for NIM API call")
@@ -142,7 +145,7 @@ After receiving tool results, continue your analysis. When you have all data, ou
     max_iterations = 8
     for iteration in range(max_iterations):
         print(f"  → Agent iteration {iteration + 1}...")
-        response = call_nim(messages, max_tokens=8000, temperature=0.3)
+        response = call_nim(messages, max_tokens=4000, temperature=0.3)
 
         # Check if model wants to use a tool
         tool_match = re.search(r'```tool\s*\n(\{.*?\})\n\s*```', response, re.DOTALL)
