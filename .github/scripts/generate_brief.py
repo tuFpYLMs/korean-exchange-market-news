@@ -142,45 +142,47 @@ After receiving tool results, continue your analysis. When you have all data, ou
     # Add tools description to system prompt
     messages[0]["content"] += "\n\n" + tools_desc
 
-    max_iterations = 8
+    max_iterations = 12
     for iteration in range(max_iterations):
         print(f"  → Agent iteration {iteration + 1}...")
         response = call_nim(messages, max_tokens=4000, temperature=0.3)
 
-        # Check if model wants to use a tool
-        tool_match = re.search(r'```tool\s*\n(\{.*?\})\n\s*```', response, re.DOTALL)
-        if not tool_match:
+        # Check if model wants to use tools — find ALL tool blocks
+        tool_matches = re.findall(r'```tool\s*\n(\{.*?\})\n\s*```', response, re.DOTALL)
+        if not tool_matches:
             # No tool call — this is the final output
             print("  ✓ Final response received (no more tool calls)")
             return response
 
-        # Parse tool call
-        try:
-            tool_call = json.loads(tool_match.group(1))
-        except json.JSONDecodeError:
-            print(f"  ⚠ Invalid tool JSON: {tool_match.group(1)}")
-            messages.append({"role": "assistant", "content": response})
-            messages.append({"role": "user", "content": "Invalid tool format. Please use exact JSON format: {\"tool\": \"web_search\", \"query\": \"...\"}"})
-            continue
+        print(f"  🔧 Found {len(tool_matches)} tool call(s)")
 
-        tool_name = tool_call.get("tool")
-        print(f"  🔧 Tool call: {tool_name}")
+        # Execute all tool calls
+        tool_results = []
+        for tool_json in tool_matches:
+            try:
+                tool_call = json.loads(tool_json)
+            except json.JSONDecodeError:
+                tool_results.append({"error": "Invalid JSON", "raw": tool_json})
+                continue
 
-        # Execute tool
-        if tool_name == "web_search":
-            query = tool_call.get("query", "")
-            results = web_search(query)
-            tool_result = json.dumps(results, ensure_ascii=False, indent=2)
-        elif tool_name == "web_fetch":
-            url = tool_call.get("url", "")
-            content = web_fetch(url)
-            tool_result = json.dumps({"url": url, "content": content[:4000]}, ensure_ascii=False)
-        else:
-            tool_result = json.dumps({"error": f"Unknown tool: {tool_name}"})
+            tool_name = tool_call.get("tool")
+            print(f"     → Executing: {tool_name}")
 
-        # Add assistant message + tool result to conversation
+            if tool_name == "web_search":
+                query = tool_call.get("query", "")
+                results = web_search(query)
+                tool_results.append({"tool": tool_name, "query": query, "results": results})
+            elif tool_name == "web_fetch":
+                url = tool_call.get("url", "")
+                content = web_fetch(url)
+                tool_results.append({"tool": tool_name, "url": url, "content": content[:4000]})
+            else:
+                tool_results.append({"error": f"Unknown tool: {tool_name}"})
+
+        # Add assistant message + all tool results to conversation
         messages.append({"role": "assistant", "content": response})
-        messages.append({"role": "user", "content": f"Tool result for {tool_name}:\n{tool_result}\n\nContinue your analysis."})
+        combined_results = json.dumps(tool_results, ensure_ascii=False, indent=2)
+        messages.append({"role": "user", "content": f"Tool results:\n{combined_results}\n\nContinue your analysis using the above data."})
 
     print("  ⚠ Max iterations reached. Returning last response.")
     return response
