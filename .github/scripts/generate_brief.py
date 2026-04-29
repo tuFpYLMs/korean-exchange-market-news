@@ -120,23 +120,25 @@ def run_agent_with_tools(system_prompt: str, user_prompt: str) -> str:
 
     # Tool definitions for the model
     tools_desc = """
-You have access to these tools. To use a tool, output ONLY a JSON block like this:
+You have access to web_search and web_fetch tools. 
+
+IMPORTANT WORKFLOW:
+1. First, call the tools you need by outputting JSON blocks
+2. WAIT — I will execute the tools and return results
+3. After receiving results, analyze the data and write the final brief
+4. Do NOT output more tool calls after receiving results — write the brief instead
+
+To use a tool, output ONLY a JSON block like this:
 
 ```tool
 {"tool": "web_search", "query": "your search query"}
 ```
 
-or
-
-```tool
-{"tool": "web_fetch", "url": "https://example.com"}
-```
-
 Available tools:
-- web_search(query): Search DuckDuckGo for the query. Returns list of results with title, URL, snippet.
-- web_fetch(url): Fetch the content of a URL. Returns page text.
+- web_search(query): Search DuckDuckGo. Returns results with title, URL, snippet.
+- web_fetch(url): Fetch webpage content. Returns page text.
 
-After receiving tool results, continue your analysis. When you have all data, output the final brief.
+After I return tool results, write the final brief using that data.
 """
 
     # Add tools description to system prompt
