@@ -55,9 +55,12 @@ jobs:
 
       - name: Commit and push review
         if: steps.gate.outputs.exit_code == '0'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
           git add reviews/
           git diff --cached --quiet || git commit -m "Post-market review: $(date -u +%Y-%m-%d) via ${{ env.MODEL_NAME }}"
           git push
