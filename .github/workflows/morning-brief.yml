@@ -1,0 +1,107 @@
+name: KRX Morning Brief
+
+on:
+  schedule:
+    # 23:00 UTC = 08:00 KST next day (before KRX opens at 09:00 KST)
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  generate-brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Generate Morning Brief via NVIDIA NIM
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          import sys
+          import json
+          import requests
+          from datetime import datetime, timezone, timedelta
+
+          # Get KST date (next trading day)
+          kst_now = datetime.now(timezone.utc) + timedelta(hours=9)
+          kst_date = kst_now.strftime("%Y-%m-%d")
+          kst_weekday = kst_now.weekday()
+
+          # KRX holidays 2026
+          KRX_HOLIDAYS = {
+              "2026-01-01", "2026-01-02",
+              "2026-02-16", "2026-02-17", "2026-02-18",
+              "2026-03-01", "2026-05-01", "2026-05-05",
+              "2026-06-06", "2026-08-15",
+              "2026-09-28", "2026-09-29", "2026-09-30",
+              "2026-10-03", "2026-10-05",
+              "2026-12-25", "2026-12-31",
+          }
+
+          # Skip weekends and holidays
+          if kst_weekday >= 5:
+              print(f"SKIP: Weekend ({kst_date})")
+              sys.exit(0)
+          if kst_date in KRX_HOLIDAYS:
+              print(f"SKIP: Holiday ({kst_date})")
+              sys.exit(0)
+
+          # Read the prompt
+          with open("prompts/morning-brief.md", "r") as f:
+              prompt_text = f.read()
+
+          # Call NVIDIA NIM API
+          api_key = os.environ["NVIDIA_API_KEY"]
+          url = "https://integrate.api.nvidia.com/v1/chat/completions"
+          headers = {
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json"
+          }
+          payload = {
+              "model": "deepseek-ai/deepseek-v4-pro",
+              "messages": [
+                  {"role": "system", "content": "You are a professional macro and equity trading desk analyst specializing in the Korean stock market (KRX). Generate dense, actionable market intelligence briefs."},
+                  {"role": "user", "content": prompt_text + f"\n\nToday's date (KST): {kst_date}. Generate the brief for the NEXT trading day."}
+              ],
+              "max_tokens": 8000,
+              "temperature": 0.3
+          }
+
+          print(f"Calling NVIDIA NIM for {kst_date}...")
+          resp = requests.post(url, headers=headers, json=payload, timeout=300)
+          resp.raise_for_status()
+          data = resp.json()
+          brief_content = data["choices"][0]["message"]["content"]
+
+          # Save brief
+          os.makedirs("briefs", exist_ok=True)
+          brief_path = f"briefs/{kst_date}.md"
+          with open(brief_path, "w") as f:
+              f.write(brief_content)
+
+          print(f"Brief saved to {brief_path} ({len(brief_content)} chars)")
+          PYEOF
+
+      - name: Commit and push brief
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add briefs/
+          git diff --cached --quiet || git commit -m "Morning Brief: $(date -u +%Y-%m-%d)"
+          git push

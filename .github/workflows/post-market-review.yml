@@ -1,0 +1,122 @@
+name: KRX Post-Market Review
+
+on:
+  schedule:
+    # 06:30 UTC = 15:30 KST (after KRX closes)
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  generate-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run date gate check
+        id: gate
+        run: |
+          python3 scripts/review_gate.py
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Generate Post-Market Review via NVIDIA NIM
+        if: steps.gate.outputs.exit_code == '0'
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          import sys
+          import json
+          import requests
+          import subprocess
+
+          # Run gate to get paths
+          result = subprocess.run(["python3", "scripts/review_gate.py"], 
+                                  capture_output=True, text=True)
+          if result.returncode != 0:
+              print(f"Gate blocked: {result.stdout}")
+              sys.exit(0)
+
+          # Parse gate output
+          brief_path = None
+          review_path = None
+          kst_date = None
+          for line in result.stdout.strip().split("\n"):
+              if line.startswith("BRIEF_PATH="):
+                  brief_path = line.split("=", 1)[1]
+              elif line.startswith("REVIEW_PATH="):
+                  review_path = line.split("=", 1)[1]
+              elif line.startswith("KST_DATE="):
+                  kst_date = line.split("=", 1)[1]
+
+          if not brief_path or not os.path.exists(brief_path):
+              print(f"SKIP: Brief not found at {brief_path}")
+              sys.exit(0)
+
+          # Read brief
+          with open(brief_path, "r") as f:
+              brief_content = f.read()
+
+          # Read review prompt
+          with open("prompts/post-market-review.md", "r") as f:
+              prompt_text = f.read()
+
+          # Call NVIDIA NIM API
+          api_key = os.environ["NVIDIA_API_KEY"]
+          url = "https://integrate.api.nvidia.com/v1/chat/completions"
+          headers = {
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json"
+          }
+          payload = {
+              "model": "deepseek-ai/deepseek-v4-pro",
+              "messages": [
+                  {"role": "system", "content": "You are a quantitative trading desk analyst. You evaluate market predictions with strict data discipline. NEVER hallucinate numbers. If data is missing, mark it UNTESTABLE."},
+                  {"role": "user", "content": prompt_text + f"\n\nBRIEF_PATH={brief_path}\nREVIEW_PATH={review_path}\nKST_DATE={kst_date}\n\nMORNING BRIEF CONTENT:\n{brief_content}"}
+              ],
+              "max_tokens": 12000,
+              "temperature": 0.2
+          }
+
+          print(f"Calling NVIDIA NIM for review of {kst_date}...")
+          resp = requests.post(url, headers=headers, json=payload, timeout=300)
+          resp.raise_for_status()
+          data = resp.json()
+          review_content = data["choices"][0]["message"]["content"]
+
+          # If review is just SKIP, don't save
+          if review_content.strip().startswith("SKIP:"):
+              print(review_content.strip())
+              sys.exit(0)
+
+          # Save review
+          os.makedirs("reviews", exist_ok=True)
+          with open(review_path, "w") as f:
+              f.write(review_content)
+
+          print(f"Review saved to {review_path} ({len(review_content)} chars)")
+          PYEOF
+
+      - name: Commit and push review
+        if: steps.gate.outputs.exit_code == '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reviews/
+          git diff --cached --quiet || git commit -m "Post-market review: $(date -u +%Y-%m-%d)"
+          git push
