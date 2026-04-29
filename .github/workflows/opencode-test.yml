@@ -30,6 +30,7 @@ jobs:
         uses: anomalyco/opencode/github@latest
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
         with:
           model: ${{ inputs.model || 'nvidia/deepseek-ai/deepseek-v4-flash' }}
           prompt: |

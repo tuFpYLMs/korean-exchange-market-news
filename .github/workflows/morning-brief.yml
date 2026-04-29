@@ -42,6 +42,7 @@ jobs:
       - name: Generate Morning Brief via OpenCode
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           export MODEL="${{ env.MODEL_NAME }}"
