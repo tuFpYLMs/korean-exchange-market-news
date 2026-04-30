@@ -72,3 +72,5 @@ jobs:
             - If conviction is low, state it clearly
             - Convert all times to KST
             - Use overnight data heavily
+            
+            IMPORTANT: The current time is ${{ github.event.inputs.time || '17:00 KST' }}. Use this as the reference time for all data and analysis.
