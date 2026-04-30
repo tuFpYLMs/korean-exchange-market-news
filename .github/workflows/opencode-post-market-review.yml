@@ -1,9 +1,6 @@
 name: KRX Post-Market Review — OpenCode
 
 on:
-  schedule:
-    # 06:30 UTC = 15:30 KST (after KRX closes)
-    - cron: '30 6 * * *'
   workflow_dispatch:
     inputs:
       model:
